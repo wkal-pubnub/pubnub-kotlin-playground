@@ -12,22 +12,25 @@ import com.pubnub.v3.ChannelSubscription
 import com.pubnub.v3.EventEmitter
 import com.pubnub.v3.EventListener
 import com.pubnub.v3.PubNubV3
+import com.pubnub.v3.StatusEmitter
+import com.pubnub.v3.StatusListener
 import com.pubnub.v3.Subscription
 import com.pubnub.v3.SubscriptionSet
 import java.util.concurrent.atomic.AtomicReference
 
 class PubNubV3Impl internal constructor(
     private val pubNub: PubNub,
-    private val emitter: EventEmitterImpl = EventEmitterImpl()
-) : PubNubV3, EventEmitter by emitter {
+    private val eventEmitter: EventEmitterImpl = EventEmitterImpl(),
+    private val statusEmitter: StatusEmitterImpl = StatusEmitterImpl()
+    ) : PubNubV3, EventEmitter by eventEmitter, StatusEmitter by statusEmitter {
 
     private val listener = object : SubscribeCallback() {
         override fun status(pubnub: PubNub, pnStatus: PNStatus) {
-            emitter.onStatus()
+            statusEmitter.onStatus(pnStatus)
         }
 
         override fun message(pubnub: PubNub, pnMessageResult: PNMessageResult) {
-            emitter.onMessage(pnMessageResult)
+            eventEmitter.onMessage(pnMessageResult)
         }
     }
 
@@ -42,15 +45,15 @@ class PubNubV3Impl internal constructor(
 
     private val channelSubscriptions = mutableMapOf<Channel, MutableSet<Subscription>>()
 
-    internal fun subscribe(subscription: ChannelSubscription) {
+    internal fun subscribe(vararg subscriptions: ChannelSubscription) {
         synchronized(channelSubscriptions) {
             val toSubscribe = mutableSetOf<String>()
-            channelSubscriptions.putIfAbsent(subscription.channel, mutableSetOf())
-            val set = channelSubscriptions[subscription.channel]
-            set!!
-            set.add(subscription)
-            if (set.size > 0) { //TODO what about presence
-                toSubscribe += subscription.channel.id
+            subscriptions.forEach { subscription ->
+                val set = channelSubscriptions.computeIfAbsent(subscription.channel) { mutableSetOf() }
+                set.add(subscription)
+                if (set.size == 1) { //TODO what about presence
+                    toSubscribe += subscription.channel.id
+                }
             }
             pubNub.subscribe(channels = toSubscribe.toList())
         }
@@ -235,7 +238,7 @@ internal data class ChannelImpl(private val pubNub: PubNubV3Impl, override val i
 }
 
 internal data class ChannelGroupImpl(private val pubNub: PubNubV3Impl, override val id: String) : ChannelGroup {
-    override fun subscription(withPresence: Boolean): ChannelGroupSubscription {
+    override fun subscription(): ChannelGroupSubscription {
         return ChannelGroupSubscriptionImpl(pubNub, this)
     }
 
@@ -245,19 +248,18 @@ internal data class ChannelGroupImpl(private val pubNub: PubNubV3Impl, override 
 
 }
 
-
 internal class EventEmitterImpl : EventEmitter, EventListener {
     var filter: FilterableSubscription = FilterableSubscription { true }
-    private var listeners = AtomicReference(setOf<EventListener>())
+    private var eventListeners = AtomicReference(setOf<EventListener>())
 
     override fun addListener(listener: EventListener) {
-        listeners.updateAndGet {
+        eventListeners.updateAndGet {
             it.toMutableSet().apply { add(listener) }
         }
     }
 
     override fun removeListener(listener: EventListener) {
-        listeners.updateAndGet {
+        eventListeners.updateAndGet {
             it.toMutableSet().apply { remove(listener) }
         }
     }
@@ -266,39 +268,34 @@ internal class EventEmitterImpl : EventEmitter, EventListener {
         if (!filter.accept(result)) {
             return
         }
-        listeners.get().forEach {
+        eventListeners.get().forEach {
             it.onMessage(result)
         }
     }
 
-    override fun onStatus() {
-        listeners.get().forEach {
-            it.onStatus()
+    fun removeAllListeners() {
+        eventListeners.updateAndGet { emptySet() }
+    }
+}
+
+internal class StatusEmitterImpl : StatusEmitter, StatusListener {
+    private var statusListeners = AtomicReference(setOf<StatusListener>())
+
+    override fun onStatus(status: PNStatus) {
+        statusListeners.get().forEach {
+            it.onStatus(status)
         }
     }
 
-    fun removeAllListeners() {
-        listeners.updateAndGet { emptySet() }
+    override fun addListener(listener: StatusListener) {
+        statusListeners.updateAndGet {
+            it.toMutableSet().apply { add(listener) }
+        }
     }
 
-//    override fun onSignal() {
-//        TODO("Not yet implemented")
-//    }
-//
-//    override fun onPresence() {
-//        TODO("Not yet implemented")
-//    }
-//
-//    override fun onObject() {
-//        TODO("Not yet implemented")
-//    }
-//
-//    override fun onMessageReaction() {
-//        TODO("Not yet implemented")
-//    }
-//
-//    override fun onFile() {
-//        TODO("Not yet implemented")
-//    }
-
+    override fun removeListener(listener: StatusListener) {
+        statusListeners.updateAndGet {
+            it.toMutableSet().apply { remove(listener) }
+        }
+    }
 }
